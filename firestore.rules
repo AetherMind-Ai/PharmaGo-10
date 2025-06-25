@@ -1,0 +1,210 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // ─── Users ─────────────────────────────────────────────────────────────────
+    // Authenticated users can create their user doc.
+    // Authenticated users can read their own user doc.
+    // Only the owner can update or delete their user doc.
+    match /users/{userId} {
+      allow create: if request.auth != null;
+      // Allow authenticated users to read their own user doc.
+      allow read: if request.auth != null && request.auth.uid == userId;
+      // Allow public read for pharmacy user profiles if they have pharmacyInfo or a 'pharmacy' role.
+      allow read: if (resource.data.role is string && (resource.data.role == 'pharmacy' || resource.data.role == 'Pharmacy')) || resource.data.pharmacyInfo != null;
+      // Allow delivery users to read their own user doc
+      allow read: if request.auth != null && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'Delivery';
+      allow update, delete: if
+        request.auth != null &&
+        request.auth.uid == userId;
+
+      // ─── Cart Items (Subcollection of Users) ────────────────────────────────
+      match /cartItems/{cartItemId} {
+        allow read, write: if
+          request.auth != null &&
+          request.auth.uid == userId;
+      }
+
+      // ─── OBP Subcollection (Subcollection of Users) ─────────────────────────
+      match /OBP/{documentId} {
+        allow create: if
+          request.auth != null &&
+          request.auth.uid == userId;
+        // Add more permissions as needed:
+        allow read, update, delete: if
+          request.auth != null &&
+          request.auth.uid == userId;
+      }
+
+      // ─── New Product Subcollection (Subcollection of Users) ─────────────────
+      // Allows any authenticated user to read all products.
+      // Only the owner can create or delete products in their own subcollection.
+      match /newproduct/{documentId} {
+        allow read: if true; // Allow public read access for new products
+        allow create, update, delete: if // Added 'update' permission
+          request.auth != null &&
+          request.auth.uid == userId;
+      }
+    }
+
+    // ─── Comments ──────────────────────────────────────────────────────────────
+    // Signed-in users can create and read comments.
+    // Only the comment owner can update or delete their comment.
+    match /comments/{commentId} {
+      allow read, create: if request.auth != null;
+      allow update, delete: if
+        request.auth != null &&
+        resource.data.userId == request.auth.uid;
+    }
+
+    // ─── Products ──────────────────────────────────────────────────────────────
+    // Allow authenticated users to read and create products.
+    // Allow product deletion only by the pharmacy that created it.
+    match /products/{productId} {
+      allow read: if true; // Allow public read access for products
+      allow create: if request.auth != null;
+      allow delete: if request.auth != null && resource.data.pharmacyId == request.auth.uid; // Only the creating pharmacy can delete
+    }
+
+    // ─── Feedbacks ─────────────────────────────────────────────────────────────────────────────────────────
+    // Authenticated users can create feedback.
+    // All users (authenticated or not) can read feedback.
+    // Authenticated users can update reactions on feedback.
+    match /feedbacks/{feedbackId} {
+      allow create: if request.auth != null;
+      // Allow public read for feedbacks to show user reviews
+      allow read: if true;
+      // Allow authenticated users to update the 'reactions' field and 'viewCount' field
+      allow update: if request.auth != null && 
+                    (request.resource.data.diff(resource.data).affectedKeys().hasOnly(['reactions']) ||
+                     request.resource.data.diff(resource.data).affectedKeys().hasOnly(['viewCount']));
+      allow delete: if request.auth != null && resource.data.userId == request.auth.uid; // Only the feedback owner can delete feedback
+
+      // ─── Replies (Subcollection of Feedbacks) ───────────────────────────────
+      match /replies/{replyId} {
+        allow read: if true; // Allow public read for replies
+        allow create: if request.auth != null;
+        // Allow authenticated users to update only the 'reactions' field
+        allow update: if request.auth != null && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['reactions']);
+        allow delete: if
+          request.auth != null &&
+          resource.data.userId == request.auth.uid; // Only the reply owner can delete
+      }
+    }
+
+    // ─── Feedback Collection ─────────────────────────────────────────────────────
+    // Allow reading the feedback collection to show user reviews and reactions
+    match /feedback/{feedbackId} {
+      allow read: if true; // Anyone can read feedback
+      allow create: if request.auth != null; // Only authenticated users can create feedback
+      allow update: if request.auth != null && 
+                    (request.resource.data.diff(resource.data).affectedKeys().hasOnly(['reactions']) ||
+                     request.resource.data.diff(resource.data).affectedKeys().hasOnly(['viewCount']));
+      allow delete: if request.auth != null && resource.data.userId == request.auth.uid;
+
+      // ─── Replies (Subcollection of Feedback) ───────────────────────────────
+      match /replies/{replyId} {
+        allow read: if true; // Allow public read for replies
+        allow create: if request.auth != null; // Allow any authenticated user to create replies
+        allow update: if request.auth != null && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['reactions']);
+        allow delete: if request.auth != null && resource.data.userId == request.auth.uid; // Only the reply owner can delete
+      }
+    }
+
+    // ─── Profile Views ─────────────────────────────────────────────────────────────
+    // Anyone (authenticated or anonymous) can create a profile view log.
+    // Anyone can read profile view logs to show view counts on profiles.
+    match /profileViews/{viewId} {
+      allow create: if true; // Anyone can create a view record
+      allow read: if true; // Anyone can read profile views to see the count
+      allow update: if true; // Allow anyone to update profile views for counting
+      allow delete: if false; // Views cannot be deleted
+    }
+    
+    // ─── Orders ────────────────────────────────────────────────────────────────
+    match /orders/{orderId} {
+      // Allow authenticated users to create orders
+      allow create: if request.auth != null;
+
+      // Allow users to read their own orders
+      allow read: if request.auth != null && request.auth.uid == resource.data.userId;
+
+      // Allow pharmacies to read orders assigned to them
+      allow read: if request.auth != null && 
+                     request.auth.uid == resource.data.pharmacyId &&
+                     get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'Pharmacy';
+
+      // Allow delivery personnel to read orders assigned to them or unassigned orders with status Pending or Shipped
+      allow read: if request.auth != null && 
+                     get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'Delivery' &&
+                     (resource.data.status == 'Pending' || resource.data.status == 'Shipped') &&
+                     (resource.data.deliverymanId == request.auth.uid || resource.data.deliverymanId == null);
+
+      // Allow delivery personnel to update status, deliverymanId, deliverymanName, shippedAt
+      // Only if the order is pending and they are claiming it or it's already assigned to them
+      allow update: if request.auth != null && 
+                      get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'Delivery' &&
+                      resource.data.status == 'Pending' &&
+                      (request.resource.data.status == 'Shipped') && // Only allow status change to 'Shipped'
+                      (request.resource.data.deliverymanId == request.auth.uid) && // Must assign to self
+                      (request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status', 'deliverymanId', 'deliverymanName', 'shippedAt']));
+
+      // Allow pharmacies to update status (e.g., to 'Cancelled' or 'Delivered' if they manage delivery)
+      // For simplicity, let's allow pharmacies to update status to 'Cancelled' or 'Delivered'
+      allow update: if request.auth != null &&
+                      request.auth.uid == resource.data.pharmacyId &&
+                      get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'Pharmacy' &&
+                      (request.resource.data.status == 'Cancelled' || request.resource.data.status == 'Delivered') &&
+                      request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status']);
+
+      // Deny direct deletion of orders
+      allow delete: if false;
+    }
+
+    // ─── Public Mock Products ──────────────────────────────────────────────────
+    // Allow public read access to mockProducts for all users.
+    match /mockProducts/{productId} {
+      allow read: if true;
+    }
+
+    // ─── Pharmacies ────────────────────────────────────────────────────────────
+    // Allow authenticated users to read pharmacy data.
+    // Only the pharmacy owner can update their pharmacy data.
+ic    match /pharmacies/{pharmacyId} {
+      allow read: if true; // Allow public read access for pharmacy profiles
+      allow create: if request.auth != null;
+      allow update: if request.auth != null && request.auth.uid == pharmacyId;
+    }
+
+    // ─── Pharmacy Verification (MTP) ───────────────────────────────────────────
+    // Rules for the pharmacyVerification collection (now primarily for initial MTP generation)
+    match /pharmacyVerification/{documentId} {
+      // Allow creation only if authenticated and userId matches
+      allow create: if request.auth != null && request.auth.uid == request.resource.data.userId;
+      // Allow read only if authenticated and userId matches
+      allow read: if request.auth != null && request.auth.uid == resource.data.userId;
+      // Allow update only for 'used' status by the owner
+      allow update: if request.auth != null && request.auth.uid == resource.data.userId && request.resource.data.keys().hasOnly(['used']);
+      // No delete permission needed as MTPs are single-use or overwritten
+      allow delete: if false;
+    }
+
+    // ─── Deny All Else ─────────────────────────────────────────────────────────
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}
+
+service firebase.storage {
+  match /b/{bucket}/o {
+    match /feedback_images/{pharmacyId}/{imageId} {
+      allow write: if request.auth != null; // Allow any authenticated user to upload feedback images
+      allow read: if true; // Anyone can read feedback images
+    }
+    match /pharmacy_cover_photos/{pharmacyId}/{imageId} {
+      allow write: if request.auth != null && request.auth.uid == pharmacyId; // Only pharmacy owner can upload their cover photo
+      allow read: if true; // Anyone can read pharmacy cover photos
+    }
+  }
+}
